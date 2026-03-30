@@ -45,13 +45,13 @@ def test_record_writes_latest_spot_and_perp_values(tmp_path) -> None:
 
     spot_states = {
         "midprice": PriceBasisState(timestamp=101, price=100.25, basis=0.4),
-        "microprice_2x": PriceBasisState(timestamp=101, price=100.2, basis=0.35),
-        "microprice_4x": PriceBasisState(timestamp=101, price=100.15, basis=0.3),
+        "microprice_1p5x": PriceBasisState(timestamp=101, price=100.2, basis=0.35),
+        "microprice_3x": PriceBasisState(timestamp=101, price=100.15, basis=0.3),
     }
     perp_states = {
         "midprice": PriceBasisState(timestamp=102, price=100.5, basis=0.6),
-        "microprice_2x": PriceBasisState(timestamp=102, price=100.45, basis=0.55),
-        "microprice_4x": PriceBasisState(timestamp=102, price=100.4, basis=0.5),
+        "microprice_1p5x": PriceBasisState(timestamp=102, price=100.45, basis=0.55),
+        "microprice_3x": PriceBasisState(timestamp=102, price=100.4, basis=0.5),
     }
 
     collector.record(spot_measurement, spot_states)
@@ -82,12 +82,12 @@ def test_record_writes_latest_spot_and_perp_values(tmp_path) -> None:
             midprice_filtered_timestamp,
             midprice_filtered_price,
             midprice_basis,
-            microprice_2x_filtered_timestamp,
-            microprice_2x_filtered_price,
-            microprice_2x_basis,
-            microprice_4x_filtered_timestamp,
-            microprice_4x_filtered_price,
-            microprice_4x_basis
+            microprice_1p5x_filtered_timestamp,
+            microprice_1p5x_filtered_price,
+            microprice_1p5x_basis,
+            microprice_3x_filtered_timestamp,
+            microprice_3x_filtered_price,
+            microprice_3x_basis
         FROM price_snapshots
         ORDER BY id
         """
@@ -189,5 +189,55 @@ def test_existing_table_is_migrated_with_new_observation_columns(tmp_path) -> No
     assert "observed_bid_price" in columns
     assert "observed_mid_price" in columns
     assert "midprice_filtered_price" in columns
-    assert "microprice_2x_basis" in columns
-    assert "microprice_4x_filtered_timestamp" in columns
+    assert "microprice_1p5x_basis" in columns
+    assert "microprice_3x_filtered_timestamp" in columns
+
+
+def test_obsolete_filter_columns_trigger_table_rebuild(tmp_path) -> None:
+    db_path = tmp_path / "btc_prices.sqlite3"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE price_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset TEXT NOT NULL,
+            measurement_timestamp INTEGER,
+            observed_market_type TEXT NOT NULL,
+            microprice_2x_filtered_timestamp INTEGER,
+            microprice_2x_filtered_price REAL,
+            microprice_2x_basis REAL,
+            filtered_price REAL NOT NULL,
+            basis REAL NOT NULL,
+            recorded_at_ms INTEGER NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO price_snapshots (
+            asset,
+            measurement_timestamp,
+            observed_market_type,
+            microprice_2x_filtered_timestamp,
+            microprice_2x_filtered_price,
+            microprice_2x_basis,
+            filtered_price,
+            basis,
+            recorded_at_ms
+        ) VALUES ('BTC', 1, 'spot', 1, 100.0, 0.1, 100.0, 0.1, 1)
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    collector = SQLiteDataCollector("BTC", db_dir=tmp_path)
+    columns = [
+        row[1]
+        for row in collector.connection.execute("PRAGMA table_info(price_snapshots)").fetchall()
+    ]
+    row_count = collector.connection.execute("SELECT COUNT(*) FROM price_snapshots").fetchone()[0]
+    collector.close()
+
+    assert "microprice_2x_filtered_timestamp" not in columns
+    assert "microprice_1p5x_filtered_timestamp" in columns
+    assert row_count == 0

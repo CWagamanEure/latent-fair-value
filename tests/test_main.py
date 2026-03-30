@@ -1,4 +1,5 @@
 import pytest
+import numpy as np
 
 from src import main
 from src.main import build_parser
@@ -122,14 +123,14 @@ def test_build_filter_runs_uses_requested_initial_state_and_params() -> None:
 
     assert [filter_run.name for filter_run in filter_runs] == [
         "midprice",
-        "microprice_2x",
-        "microprice_4x",
+        "microprice_1p5x",
+        "microprice_3x",
     ]
 
     expected_multipliers = {
         "midprice": (1.0, "midprice"),
-        "microprice_2x": (2.0, "microprice"),
-        "microprice_4x": (4.0, "microprice"),
+        "microprice_1p5x": (1.5, "microprice"),
+        "microprice_3x": (3.0, "microprice"),
     }
     for filter_run in filter_runs:
         kalman_filter = filter_run.kalman_filter
@@ -138,11 +139,13 @@ def test_build_filter_runs_uses_requested_initial_state_and_params() -> None:
         assert kalman_filter.microprice_r_mult == expected_microprice_r_mult
         assert kalman_filter.spot_r_mult == 1.0
         assert kalman_filter.perp_r_mult == 1.25
-        assert kalman_filter.min_measurement_var == 0.25
+        assert kalman_filter.min_measurement_var == 5.0e-11
+        assert kalman_filter.price_var_per_sec == 1.0e-8
+        assert kalman_filter.basis_var_per_sec == 2.5e-8
+        assert kalman_filter.basis_kappa == 0.0
+        assert kalman_filter.basis_long_run_mean == 0.0
         assert kalman_filter.state.timestamp == 123
-        assert kalman_filter.state.price == 100.0
-        assert kalman_filter.state.basis == 1.5
+        assert kalman_filter.state.price == pytest.approx(np.log(100.0))
+        assert kalman_filter.state.basis == pytest.approx(np.log(101.5) - np.log(100.0))
         assert kalman_filter.cov.timestamp == 123
-        assert kalman_filter.cov.matrix.tolist() == [[100.0, 0.0], [0.0, 25.0]]
-        assert kalman_filter.F.tolist() == [[1.0, 0.0], [0.0, 1.0]]
-        assert kalman_filter.Q.tolist() == [[0.1, 0.0], [0.0, 0.01]]
+        assert kalman_filter.cov.matrix.tolist() == [[2.5e-06, 0.0], [0.0, 1e-05]]

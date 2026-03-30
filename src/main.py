@@ -23,6 +23,16 @@ class FilterRun:
     kalman_filter: KalmanFilter
 
 
+def linearize_filter_state(state: PriceBasisState) -> PriceBasisState:
+    spot_price = float(np.exp(state.price))
+    perp_price = float(np.exp(state.price + state.basis))
+    return PriceBasisState(
+        timestamp=state.timestamp,
+        price=spot_price,
+        basis=perp_price - spot_price,
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Stream Hyperliquid websocket updates for a market."
@@ -139,8 +149,8 @@ async def process_measurements(
             states_by_filter: dict[str, PriceBasisState] = {}
             try:
                 for filter_run in filter_runs:
-                    filter_run.kalman_filter.predict()
-                    states_by_filter[filter_run.name] = filter_run.kalman_filter.update(measurement)
+                    state = filter_run.kalman_filter.update(measurement)
+                    states_by_filter[filter_run.name] = linearize_filter_state(state)
             except ValueError:
                 print(measurement, flush=True)
                 continue
@@ -169,8 +179,13 @@ def build_filter_runs(
     first_spot_mid: float,
     first_perp_mid: float,
 ) -> list[FilterRun]:
-    init_price = float(first_spot_mid)
-    init_basis = float(first_perp_mid - first_spot_mid)
+    first_spot_mid = float(first_spot_mid)
+    first_perp_mid = float(first_perp_mid)
+    if first_spot_mid <= 0.0 or first_perp_mid <= 0.0:
+        raise ValueError("Initial spot and perp prices must be positive for log-price filtering")
+
+    init_price = float(np.log(first_spot_mid))
+    init_basis = float(np.log(first_perp_mid) - np.log(first_spot_mid))
     init_state = PriceBasisState(
         timestamp=first_timestamp,
         price=init_price,
@@ -180,27 +195,12 @@ def build_filter_runs(
         timestamp=first_timestamp,
         matrix=np.array(
             [
-                [100.0, 0.0],
-                [0.0, 25.0],
+                [2.5e-6, 0.0],
+                [0.0, 1.0e-5],
             ],
             dtype=np.float64,
         ),
     )
-    transition_matrix = np.array(
-        [
-            [1.0, 0.0],
-            [0.0, 1.0],
-        ],
-        dtype=np.float64,
-    )
-    process_noise = np.array(
-        [
-            [0.10, 0.0],
-            [0.0, 0.01],
-        ],
-        dtype=np.float64,
-    )
-
     settings_by_name = (
         (
             "midprice",
@@ -209,44 +209,50 @@ def build_filter_runs(
                 price_choice="midprice",
                 init_state=init_state,
                 init_cov=init_cov,
-                process_noise=process_noise,
-                transition_matrix=transition_matrix,
+                price_var_per_sec=1.0e-8,
+                basis_var_per_sec=2.5e-8,
+                basis_kappa=0.0,
+                basis_long_run_mean=0.0,
                 microprice_r_mult=1.0,
                 spot_r_mult=1.0,
                 perp_r_mult=1.25,
-                min_measurement_var=0.25,
+                min_measurement_var=5.0e-11,
                 covariates=None,
             ),
         ),
         (
-            "microprice_2x",
+            "microprice_1p5x",
             FilterSettings(
                 asset=market,
                 price_choice="microprice",
                 init_state=init_state,
                 init_cov=init_cov,
-                process_noise=process_noise,
-                transition_matrix=transition_matrix,
-                microprice_r_mult=2.0,
+                price_var_per_sec=1.0e-8,
+                basis_var_per_sec=2.5e-8,
+                basis_kappa=0.0,
+                basis_long_run_mean=0.0,
+                microprice_r_mult=1.5,
                 spot_r_mult=1.0,
                 perp_r_mult=1.25,
-                min_measurement_var=0.25,
+                min_measurement_var=5.0e-11,
                 covariates=None,
             ),
         ),
         (
-            "microprice_4x",
+            "microprice_3x",
             FilterSettings(
                 asset=market,
                 price_choice="microprice",
                 init_state=init_state,
                 init_cov=init_cov,
-                process_noise=process_noise,
-                transition_matrix=transition_matrix,
-                microprice_r_mult=4.0,
+                price_var_per_sec=1.0e-8,
+                basis_var_per_sec=2.5e-8,
+                basis_kappa=0.0,
+                basis_long_run_mean=0.0,
+                microprice_r_mult=3.0,
                 spot_r_mult=1.0,
                 perp_r_mult=1.25,
-                min_measurement_var=0.25,
+                min_measurement_var=5.0e-11,
                 covariates=None,
             ),
         ),

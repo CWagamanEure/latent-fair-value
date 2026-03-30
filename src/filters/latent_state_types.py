@@ -75,8 +75,13 @@ class FilterSettings:
     init_state: PriceBasisState 
     init_cov: StateCovariance
 
-    process_noise: Matrix
-    transition_matrix: Matrix
+    # price var and basis var dependent on time since last update
+    price_var_per_sec: float
+    basis_var_per_sec: float
+
+    # if 0 basis acts as random walk
+    basis_kappa: float 
+    basis_long_run_mean: float
 
 
     # measurement error values

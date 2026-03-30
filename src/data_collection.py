@@ -16,15 +16,15 @@ FILTER_COLUMN_NAMES: dict[str, tuple[str, str, str]] = {
         "midprice_filtered_price",
         "midprice_basis",
     ),
-    "microprice_2x": (
-        "microprice_2x_filtered_timestamp",
-        "microprice_2x_filtered_price",
-        "microprice_2x_basis",
+    "microprice_1p5x": (
+        "microprice_1p5x_filtered_timestamp",
+        "microprice_1p5x_filtered_price",
+        "microprice_1p5x_basis",
     ),
-    "microprice_4x": (
-        "microprice_4x_filtered_timestamp",
-        "microprice_4x_filtered_price",
-        "microprice_4x_basis",
+    "microprice_3x": (
+        "microprice_3x_filtered_timestamp",
+        "microprice_3x_filtered_price",
+        "microprice_3x_basis",
     ),
 }
 
@@ -37,6 +37,14 @@ class BBOState:
 
 class SQLiteDataCollector:
     TABLE_NAME = "price_snapshots"
+    _OBSOLETE_COLUMNS = {
+        "microprice_2x_filtered_timestamp",
+        "microprice_2x_filtered_price",
+        "microprice_2x_basis",
+        "microprice_4x_filtered_timestamp",
+        "microprice_4x_filtered_price",
+        "microprice_4x_basis",
+    }
     _EXPECTED_COLUMNS: dict[str, str] = {
         "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
         "asset": "TEXT NOT NULL",
@@ -59,12 +67,12 @@ class SQLiteDataCollector:
         "midprice_filtered_timestamp": "INTEGER",
         "midprice_filtered_price": "REAL",
         "midprice_basis": "REAL",
-        "microprice_2x_filtered_timestamp": "INTEGER",
-        "microprice_2x_filtered_price": "REAL",
-        "microprice_2x_basis": "REAL",
-        "microprice_4x_filtered_timestamp": "INTEGER",
-        "microprice_4x_filtered_price": "REAL",
-        "microprice_4x_basis": "REAL",
+        "microprice_1p5x_filtered_timestamp": "INTEGER",
+        "microprice_1p5x_filtered_price": "REAL",
+        "microprice_1p5x_basis": "REAL",
+        "microprice_3x_filtered_timestamp": "INTEGER",
+        "microprice_3x_filtered_price": "REAL",
+        "microprice_3x_basis": "REAL",
         "recorded_at_ms": "INTEGER NOT NULL",
     }
 
@@ -131,12 +139,12 @@ class SQLiteDataCollector:
                 midprice_filtered_timestamp,
                 midprice_filtered_price,
                 midprice_basis,
-                microprice_2x_filtered_timestamp,
-                microprice_2x_filtered_price,
-                microprice_2x_basis,
-                microprice_4x_filtered_timestamp,
-                microprice_4x_filtered_price,
-                microprice_4x_basis,
+                microprice_1p5x_filtered_timestamp,
+                microprice_1p5x_filtered_price,
+                microprice_1p5x_basis,
+                microprice_3x_filtered_timestamp,
+                microprice_3x_filtered_price,
+                microprice_3x_basis,
                 recorded_at_ms
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -161,12 +169,12 @@ class SQLiteDataCollector:
                 filter_column_values["midprice_filtered_timestamp"],
                 filter_column_values["midprice_filtered_price"],
                 filter_column_values["midprice_basis"],
-                filter_column_values["microprice_2x_filtered_timestamp"],
-                filter_column_values["microprice_2x_filtered_price"],
-                filter_column_values["microprice_2x_basis"],
-                filter_column_values["microprice_4x_filtered_timestamp"],
-                filter_column_values["microprice_4x_filtered_price"],
-                filter_column_values["microprice_4x_basis"],
+                filter_column_values["microprice_1p5x_filtered_timestamp"],
+                filter_column_values["microprice_1p5x_filtered_price"],
+                filter_column_values["microprice_1p5x_basis"],
+                filter_column_values["microprice_3x_filtered_timestamp"],
+                filter_column_values["microprice_3x_filtered_price"],
+                filter_column_values["microprice_3x_basis"],
                 time.time_ns() // 1_000_000,
             ),
         )
@@ -188,6 +196,16 @@ class SQLiteDataCollector:
             row[1]
             for row in self.connection.execute(f"PRAGMA table_info({self.TABLE_NAME})").fetchall()
         }
+        if existing_columns & self._OBSOLETE_COLUMNS:
+            self.connection.execute(f"DROP TABLE {self.TABLE_NAME}")
+            self.connection.execute(
+                f"""
+                CREATE TABLE {self.TABLE_NAME} (
+                    {", ".join(f"{column} {definition}" for column, definition in self._EXPECTED_COLUMNS.items())}
+                )
+                """
+            )
+            return
         for column, definition in self._EXPECTED_COLUMNS.items():
             if column in existing_columns:
                 continue
