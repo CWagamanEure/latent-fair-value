@@ -13,7 +13,7 @@ from src.data_collection import SQLiteDataCollector
 from src.filters.kalman_filter import KalmanFilter
 from src.filters.latent_state_types import FilterSettings, PriceBasisState, StateCovariance
 from src.market_feeds import MarketFeed, build_market_feeds
-from src.measurement_types import BBOMeasurement
+from src.measurement_types import ActiveAssetContextMeasurement, BBOMeasurement, Measurement
 from src.sockets.hyperliquid_socket import HyperliquidSocket
 
 
@@ -76,14 +76,14 @@ async def run_socket(socket: HyperliquidSocket) -> AsyncIterator[dict[str, Any]]
         await socket.close()
 
 
-async def stream_bbo_measurements(feeds: list[MarketFeed]) -> AsyncIterator[BBOMeasurement]:
-    queue: asyncio.Queue[BBOMeasurement | None] = asyncio.Queue()
+async def stream_market_measurements(feeds: list[MarketFeed]) -> AsyncIterator[Measurement]:
+    queue: asyncio.Queue[Measurement | None] = asyncio.Queue()
 
     async def pump_feed(feed: MarketFeed) -> None:
         try:
             async for raw_message in run_socket(feed.socket):
                 for measurement in feed.measurement_manager.build_measurements(raw_message):
-                    if isinstance(measurement, BBOMeasurement):
+                    if isinstance(measurement, (BBOMeasurement, ActiveAssetContextMeasurement)):
                         await queue.put(measurement)
         finally:
             await queue.put(None)
@@ -115,7 +115,15 @@ async def process_measurements(
     pending_perp_timestamp: int | None = None
 
     try:
-        async for measurement in stream_bbo_measurements(feeds):
+        async for measurement in stream_market_measurements(feeds):
+            if isinstance(measurement, ActiveAssetContextMeasurement):
+                if data_collector is not None:
+                    data_collector.record_active_asset_context(measurement)
+                continue
+
+            if not isinstance(measurement, BBOMeasurement):
+                continue
+
             if filter_runs is None:
                 continue
 

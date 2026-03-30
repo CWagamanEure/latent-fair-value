@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from src.data_collection import SQLiteDataCollector
 from src.filters.latent_state_types import PriceBasisState
-from src.measurement_types import BBOMeasurement
+from src.measurement_types import ActiveAssetContextMeasurement, BBOMeasurement
 
 
 def test_build_db_path_is_asset_scoped(tmp_path) -> None:
@@ -191,6 +191,164 @@ def test_existing_table_is_migrated_with_new_observation_columns(tmp_path) -> No
     assert "midprice_filtered_price" in columns
     assert "microprice_1p5x_basis" in columns
     assert "microprice_3x_filtered_timestamp" in columns
+
+
+def test_asset_context_table_is_created_and_records_structured_context(tmp_path) -> None:
+    collector = SQLiteDataCollector("BTC", db_dir=tmp_path)
+    measurement = ActiveAssetContextMeasurement(
+        timestamp=201,
+        market="BTC",
+        market_type="perp",
+        asset="BTC",
+        channel="activeAssetCtx",
+        raw_message={},
+        context={
+            "funding": "0.0001",
+            "openInterest": "12345.6",
+            "oraclePx": "100.1",
+            "markPx": "100.2",
+            "midPx": "100.15",
+            "premium": "0.0003",
+            "impactPxs": ["99.9", "100.4"],
+            "dayNtlVlm": "1234567.89",
+            "prevDayPx": "98.7",
+        },
+        is_snapshot=True,
+    )
+
+    collector.record_active_asset_context(measurement)
+    collector.close()
+
+    connection = sqlite3.connect(tmp_path / "btc_prices.sqlite3")
+    row = connection.execute(
+        """
+        SELECT
+            asset,
+            measurement_timestamp,
+            observed_market_type,
+            observed_asset,
+            funding_rate,
+            open_interest,
+            oracle_price,
+            mark_price,
+            mid_price,
+            premium,
+            impact_bid_price,
+            impact_ask_price,
+            day_notional_volume,
+            prev_day_price,
+            is_snapshot,
+            raw_context_json
+        FROM asset_context_snapshots
+        """
+    ).fetchone()
+    connection.close()
+
+    assert row == (
+        "BTC",
+        201,
+        "perp",
+        "BTC",
+        0.0001,
+        12345.6,
+        100.1,
+        100.2,
+        100.15,
+        0.0003,
+        99.9,
+        100.4,
+        1234567.89,
+        98.7,
+        1,
+        (
+            '{"dayNtlVlm":"1234567.89","funding":"0.0001","impactPxs":["99.9","100.4"],'
+            '"markPx":"100.2","midPx":"100.15","openInterest":"12345.6","oraclePx":"100.1",'
+            '"premium":"0.0003","prevDayPx":"98.7"}'
+        ),
+    )
+
+
+def test_existing_asset_context_table_is_migrated_with_new_columns(tmp_path) -> None:
+    db_path = tmp_path / "btc_prices.sqlite3"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE asset_context_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset TEXT NOT NULL,
+            measurement_timestamp INTEGER,
+            observed_market_type TEXT NOT NULL,
+            observed_asset TEXT
+        )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    collector = SQLiteDataCollector("BTC", db_dir=tmp_path)
+    columns = [
+        row[1]
+        for row in collector.connection.execute("PRAGMA table_info(asset_context_snapshots)").fetchall()
+    ]
+    collector.close()
+
+    assert "funding_rate" in columns
+    assert "open_interest" in columns
+    assert "oracle_price" in columns
+    assert "mark_price" in columns
+    assert "mid_price" in columns
+    assert "premium" in columns
+    assert "impact_bid_price" in columns
+    assert "impact_ask_price" in columns
+    assert "day_notional_volume" in columns
+    assert "prev_day_price" in columns
+    assert "raw_context_json" in columns
+
+
+def test_existing_asset_context_table_with_rows_is_migrated_without_failure(tmp_path) -> None:
+    db_path = tmp_path / "btc_prices.sqlite3"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE asset_context_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset TEXT NOT NULL,
+            measurement_timestamp INTEGER,
+            observed_market_type TEXT NOT NULL,
+            observed_asset TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO asset_context_snapshots (
+            asset,
+            measurement_timestamp,
+            observed_market_type,
+            observed_asset
+        ) VALUES ('BTC', 123, 'perp', 'BTC')
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    collector = SQLiteDataCollector("BTC", db_dir=tmp_path)
+    row = collector.connection.execute(
+        """
+        SELECT
+            asset,
+            measurement_timestamp,
+            observed_market_type,
+            observed_asset,
+            is_snapshot,
+            raw_context_json,
+            recorded_at_ms
+        FROM asset_context_snapshots
+        """
+    ).fetchone()
+    collector.close()
+
+    assert row == ("BTC", 123, "perp", "BTC", 0, "{}", 0)
 
 
 def test_obsolete_filter_columns_trigger_table_rebuild(tmp_path) -> None:
