@@ -15,7 +15,7 @@ def test_build_db_path_is_asset_scoped(tmp_path) -> None:
     assert btc_path != hype_path
 
 
-def test_record_writes_latest_spot_and_perp_values(tmp_path) -> None:
+def test_record_writes_market_snapshots_and_filter_snapshots(tmp_path) -> None:
     collector = SQLiteDataCollector("BTC", db_dir=tmp_path)
 
     spot_measurement = BBOMeasurement(
@@ -24,7 +24,7 @@ def test_record_writes_latest_spot_and_perp_values(tmp_path) -> None:
         market_type="spot",
         asset="BTC",
         channel="bbo",
-        raw_message={},
+        raw_message={"channel": "bbo", "data": {"time": 101}},
         bid_price=Decimal("99"),
         bid_size=Decimal("2"),
         ask_price=Decimal("101"),
@@ -36,7 +36,7 @@ def test_record_writes_latest_spot_and_perp_values(tmp_path) -> None:
         market_type="perp",
         asset="BTC",
         channel="bbo",
-        raw_message={},
+        raw_message={"channel": "bbo", "data": {"time": 102}},
         bid_price=Decimal("100"),
         bid_size=Decimal("4"),
         ask_price=Decimal("102"),
@@ -44,14 +44,34 @@ def test_record_writes_latest_spot_and_perp_values(tmp_path) -> None:
     )
 
     spot_states = {
-        "midprice": PriceBasisState(timestamp=101, price=100.25, basis=0.4),
-        "microprice_1p5x": PriceBasisState(timestamp=101, price=100.2, basis=0.35),
-        "microprice_3x": PriceBasisState(timestamp=101, price=100.15, basis=0.3),
+        "microprice": PriceBasisState(
+            timestamp=101,
+            price=100.25,
+            basis=0.4,
+            spot_error=-0.01,
+            perp_error=0.02,
+            temporary_dislocation=0.03,
+            quoted_spot_price=100.24,
+            quoted_perp_price=100.64,
+            quoted_basis=0.4,
+            raw_state_vector_json="[4.61,0.004,-0.0001,0.0002]",
+            raw_covariance_matrix_json="[[1.0,0.0],[0.0,2.0]]",
+        ),
     }
     perp_states = {
-        "midprice": PriceBasisState(timestamp=102, price=100.5, basis=0.6),
-        "microprice_1p5x": PriceBasisState(timestamp=102, price=100.45, basis=0.55),
-        "microprice_3x": PriceBasisState(timestamp=102, price=100.4, basis=0.5),
+        "microprice": PriceBasisState(
+            timestamp=102,
+            price=100.5,
+            basis=0.6,
+            spot_error=-0.04,
+            perp_error=0.05,
+            temporary_dislocation=0.09,
+            quoted_spot_price=100.46,
+            quoted_perp_price=101.15,
+            quoted_basis=0.69,
+            raw_state_vector_json="[4.62,0.006,-0.0004,0.0005]",
+            raw_covariance_matrix_json="[[3.0,0.0],[0.0,4.0]]",
+        ),
     }
 
     collector.record(spot_measurement, spot_states)
@@ -59,48 +79,63 @@ def test_record_writes_latest_spot_and_perp_values(tmp_path) -> None:
     collector.close()
 
     connection = sqlite3.connect(tmp_path / "btc_prices.sqlite3")
-    rows = connection.execute(
+    market_rows = connection.execute(
         """
         SELECT
             asset,
             measurement_timestamp,
-            filtered_timestamp,
+            observed_market,
             observed_market_type,
             observed_asset,
+            observed_channel,
             observed_bid_price,
             observed_bid_size,
             observed_ask_price,
             observed_ask_size,
             observed_mid_price,
             observed_microprice,
-            spot_price,
-            perp_price,
+            spot_mid_price,
+            perp_mid_price,
             spot_microprice,
             perp_microprice,
-            filtered_price,
-            basis,
-            midprice_filtered_timestamp,
-            midprice_filtered_price,
-            midprice_basis,
-            microprice_1p5x_filtered_timestamp,
-            microprice_1p5x_filtered_price,
-            microprice_1p5x_basis,
-            microprice_3x_filtered_timestamp,
-            microprice_3x_filtered_price,
-            microprice_3x_basis
-        FROM price_snapshots
+            raw_message_json
+        FROM market_snapshots
         ORDER BY id
+        """
+    ).fetchall()
+    filter_rows = connection.execute(
+        """
+        SELECT
+            fs.asset,
+            fs.filter_name,
+            fs.price_choice,
+            fs.filter_timestamp,
+            fs.filtered_price,
+            fs.basis,
+            fs.spot_error,
+            fs.perp_error,
+            fs.temporary_dislocation,
+            fs.quoted_spot_price,
+            fs.quoted_perp_price,
+            fs.quoted_basis,
+            fs.raw_state_vector_json,
+            fs.raw_covariance_matrix_json,
+            ms.measurement_timestamp
+        FROM filter_snapshots fs
+        JOIN market_snapshots ms ON ms.id = fs.market_snapshot_id
+        ORDER BY fs.id
         """
     ).fetchall()
     connection.close()
 
-    assert rows == [
+    assert market_rows == [
         (
             "BTC",
             101,
-            101,
+            "BTC",
             "spot",
             "BTC",
+            "bbo",
             99.0,
             2.0,
             101.0,
@@ -111,24 +146,15 @@ def test_record_writes_latest_spot_and_perp_values(tmp_path) -> None:
             None,
             100.33333333333333,
             None,
-            100.25,
-            0.4,
-            101,
-            100.25,
-            0.4,
-            101,
-            100.2,
-            0.35,
-            101,
-            100.15,
-            0.3,
+            '{"channel":"bbo","data":{"time":101}}',
         ),
         (
             "BTC",
             102,
-            102,
+            "BTC",
             "perp",
             "BTC",
+            "bbo",
             100.0,
             4.0,
             102.0,
@@ -139,22 +165,48 @@ def test_record_writes_latest_spot_and_perp_values(tmp_path) -> None:
             101.0,
             100.33333333333333,
             101.33333333333333,
-            100.5,
-            0.6,
+            '{"channel":"bbo","data":{"time":102}}',
+        ),
+    ]
+    assert filter_rows == [
+        (
+            "BTC",
+            "microprice",
+            "microprice",
+            101,
+            100.25,
+            0.4,
+            -0.01,
+            0.02,
+            0.03,
+            100.24,
+            100.64,
+            0.4,
+            "[4.61,0.004,-0.0001,0.0002]",
+            "[[1.0,0.0],[0.0,2.0]]",
+            101,
+        ),
+        (
+            "BTC",
+            "microprice",
+            "microprice",
             102,
             100.5,
             0.6,
+            -0.04,
+            0.05,
+            0.09,
+            100.46,
+            101.15,
+            0.69,
+            "[4.62,0.006,-0.0004,0.0005]",
+            "[[3.0,0.0],[0.0,4.0]]",
             102,
-            100.45,
-            0.55,
-            102,
-            100.4,
-            0.5,
         ),
     ]
 
 
-def test_existing_table_is_migrated_with_new_observation_columns(tmp_path) -> None:
+def test_legacy_price_snapshots_table_is_removed(tmp_path) -> None:
     db_path = tmp_path / "btc_prices.sqlite3"
     connection = sqlite3.connect(db_path)
     connection.execute(
@@ -162,16 +214,42 @@ def test_existing_table_is_migrated_with_new_observation_columns(tmp_path) -> No
         CREATE TABLE price_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             asset TEXT NOT NULL,
-            measurement_timestamp INTEGER,
-            observed_market_type TEXT NOT NULL,
-            spot_price REAL,
-            perp_price REAL,
-            spot_microprice REAL,
-            perp_microprice REAL,
-            filtered_price REAL NOT NULL,
-            basis REAL NOT NULL,
-            recorded_at_ms INTEGER NOT NULL
+            measurement_timestamp INTEGER
         )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    collector = SQLiteDataCollector("BTC", db_dir=tmp_path)
+    tables = {
+        row[0]
+        for row in collector.connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        ).fetchall()
+    }
+    collector.close()
+
+    assert "price_snapshots" not in tables
+    assert "market_snapshots" in tables
+    assert "filter_snapshots" in tables
+
+
+def test_existing_market_snapshot_table_with_wrong_shape_is_rebuilt(tmp_path) -> None:
+    db_path = tmp_path / "btc_prices.sqlite3"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE market_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset TEXT NOT NULL,
+            measurement_timestamp INTEGER
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO market_snapshots (asset, measurement_timestamp) VALUES ('BTC', 1)
         """
     )
     connection.commit()
@@ -180,17 +258,33 @@ def test_existing_table_is_migrated_with_new_observation_columns(tmp_path) -> No
     collector = SQLiteDataCollector("BTC", db_dir=tmp_path)
     columns = [
         row[1]
-        for row in collector.connection.execute("PRAGMA table_info(price_snapshots)").fetchall()
+        for row in collector.connection.execute("PRAGMA table_info(market_snapshots)").fetchall()
     ]
+    row_count = collector.connection.execute("SELECT COUNT(*) FROM market_snapshots").fetchone()[0]
     collector.close()
 
-    assert "filtered_timestamp" in columns
-    assert "observed_asset" in columns
-    assert "observed_bid_price" in columns
-    assert "observed_mid_price" in columns
-    assert "midprice_filtered_price" in columns
-    assert "microprice_1p5x_basis" in columns
-    assert "microprice_3x_filtered_timestamp" in columns
+    assert columns == [
+        "id",
+        "asset",
+        "measurement_timestamp",
+        "observed_market",
+        "observed_market_type",
+        "observed_asset",
+        "observed_channel",
+        "observed_bid_price",
+        "observed_bid_size",
+        "observed_ask_price",
+        "observed_ask_size",
+        "observed_mid_price",
+        "observed_microprice",
+        "spot_mid_price",
+        "perp_mid_price",
+        "spot_microprice",
+        "perp_microprice",
+        "raw_message_json",
+        "recorded_at_ms",
+    ]
+    assert row_count == 0
 
 
 def test_asset_context_table_is_created_and_records_structured_context(tmp_path) -> None:
@@ -201,7 +295,7 @@ def test_asset_context_table_is_created_and_records_structured_context(tmp_path)
         market_type="perp",
         asset="BTC",
         channel="activeAssetCtx",
-        raw_message={},
+        raw_message={"channel": "activeAssetCtx", "data": {"coin": "BTC"}},
         context={
             "funding": "0.0001",
             "openInterest": "12345.6",
@@ -225,8 +319,10 @@ def test_asset_context_table_is_created_and_records_structured_context(tmp_path)
         SELECT
             asset,
             measurement_timestamp,
+            observed_market,
             observed_market_type,
             observed_asset,
+            observed_channel,
             funding_rate,
             open_interest,
             oracle_price,
@@ -238,6 +334,7 @@ def test_asset_context_table_is_created_and_records_structured_context(tmp_path)
             day_notional_volume,
             prev_day_price,
             is_snapshot,
+            raw_message_json,
             raw_context_json
         FROM asset_context_snapshots
         """
@@ -247,8 +344,10 @@ def test_asset_context_table_is_created_and_records_structured_context(tmp_path)
     assert row == (
         "BTC",
         201,
+        "BTC",
         "perp",
         "BTC",
+        "activeAssetCtx",
         0.0001,
         12345.6,
         100.1,
@@ -260,49 +359,13 @@ def test_asset_context_table_is_created_and_records_structured_context(tmp_path)
         1234567.89,
         98.7,
         1,
+        '{"channel":"activeAssetCtx","data":{"coin":"BTC"}}',
         (
             '{"dayNtlVlm":"1234567.89","funding":"0.0001","impactPxs":["99.9","100.4"],'
             '"markPx":"100.2","midPx":"100.15","openInterest":"12345.6","oraclePx":"100.1",'
             '"premium":"0.0003","prevDayPx":"98.7"}'
         ),
     )
-
-
-def test_existing_asset_context_table_is_migrated_with_new_columns(tmp_path) -> None:
-    db_path = tmp_path / "btc_prices.sqlite3"
-    connection = sqlite3.connect(db_path)
-    connection.execute(
-        """
-        CREATE TABLE asset_context_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset TEXT NOT NULL,
-            measurement_timestamp INTEGER,
-            observed_market_type TEXT NOT NULL,
-            observed_asset TEXT
-        )
-        """
-    )
-    connection.commit()
-    connection.close()
-
-    collector = SQLiteDataCollector("BTC", db_dir=tmp_path)
-    columns = [
-        row[1]
-        for row in collector.connection.execute("PRAGMA table_info(asset_context_snapshots)").fetchall()
-    ]
-    collector.close()
-
-    assert "funding_rate" in columns
-    assert "open_interest" in columns
-    assert "oracle_price" in columns
-    assert "mark_price" in columns
-    assert "mid_price" in columns
-    assert "premium" in columns
-    assert "impact_bid_price" in columns
-    assert "impact_ask_price" in columns
-    assert "day_notional_volume" in columns
-    assert "prev_day_price" in columns
-    assert "raw_context_json" in columns
 
 
 def test_existing_asset_context_table_with_rows_is_migrated_without_failure(tmp_path) -> None:
@@ -338,9 +401,12 @@ def test_existing_asset_context_table_with_rows_is_migrated_without_failure(tmp_
         SELECT
             asset,
             measurement_timestamp,
+            observed_market,
             observed_market_type,
             observed_asset,
+            observed_channel,
             is_snapshot,
+            raw_message_json,
             raw_context_json,
             recorded_at_ms
         FROM asset_context_snapshots
@@ -348,54 +414,4 @@ def test_existing_asset_context_table_with_rows_is_migrated_without_failure(tmp_
     ).fetchone()
     collector.close()
 
-    assert row == ("BTC", 123, "perp", "BTC", 0, "{}", 0)
-
-
-def test_obsolete_filter_columns_trigger_table_rebuild(tmp_path) -> None:
-    db_path = tmp_path / "btc_prices.sqlite3"
-    connection = sqlite3.connect(db_path)
-    connection.execute(
-        """
-        CREATE TABLE price_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            asset TEXT NOT NULL,
-            measurement_timestamp INTEGER,
-            observed_market_type TEXT NOT NULL,
-            microprice_2x_filtered_timestamp INTEGER,
-            microprice_2x_filtered_price REAL,
-            microprice_2x_basis REAL,
-            filtered_price REAL NOT NULL,
-            basis REAL NOT NULL,
-            recorded_at_ms INTEGER NOT NULL
-        )
-        """
-    )
-    connection.execute(
-        """
-        INSERT INTO price_snapshots (
-            asset,
-            measurement_timestamp,
-            observed_market_type,
-            microprice_2x_filtered_timestamp,
-            microprice_2x_filtered_price,
-            microprice_2x_basis,
-            filtered_price,
-            basis,
-            recorded_at_ms
-        ) VALUES ('BTC', 1, 'spot', 1, 100.0, 0.1, 100.0, 0.1, 1)
-        """
-    )
-    connection.commit()
-    connection.close()
-
-    collector = SQLiteDataCollector("BTC", db_dir=tmp_path)
-    columns = [
-        row[1]
-        for row in collector.connection.execute("PRAGMA table_info(price_snapshots)").fetchall()
-    ]
-    row_count = collector.connection.execute("SELECT COUNT(*) FROM price_snapshots").fetchone()[0]
-    collector.close()
-
-    assert "microprice_2x_filtered_timestamp" not in columns
-    assert "microprice_1p5x_filtered_timestamp" in columns
-    assert row_count == 0
+    assert row == ("BTC", 123, "", "perp", "BTC", "", 0, "{}", "{}", 0)
